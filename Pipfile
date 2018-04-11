@@ -1,0 +1,28 @@
+[[source]]
+
+url = "https://pypi.python.org/simple"
+verify_ssl = true
+name = "pypi"
+
+
+[packages]
+
+"jinja2" = "*"
+pyyaml = "*"
+htmlmin = "*"
+watchdog = "*"
+livereload = "*"
+click = "*"
+"doc8" = "*"
+
+
+[dev-packages]
+
+"flake8" = "*"
+"autopep8" = "*"
+rope = "*"
+
+
+[requires]
+
+python_version = "3.6"

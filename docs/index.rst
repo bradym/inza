@@ -1,0 +1,2 @@
+- Link to chrome livereload extension
+- Explain directory structure
