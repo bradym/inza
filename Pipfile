@@ -14,6 +14,11 @@ watchdog = "*"
 livereload = "*"
 click = "*"
 "doc8" = "*"
+docutils = "*"
+markdown = "*"
+pygments = "*"
+pymdown-extensions = "*"
+lesscpy = "*"
 
 
 [dev-packages]

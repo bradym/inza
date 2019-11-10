@@ -2,102 +2,108 @@
 
 import os
 import shutil
-
+import io
 import htmlmin
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+import markdown
 import yaml
+from pprint import pprint
+import pathlib
+import datetime
+import lesscpy
+import glob
+import subprocess
 
-
-# TODO: Where should rst -> html conversion be done?
 # TODO: How to handle js & css minification?
 # TODO: How to handle asset bundling?
 
 
 class InzaGenerator():
 
-    def __init__(self, base_dir=os.getcwd(), output_suffix='.html', template_suffix='.j2', autoescape_extensions=['html', 'xml']):
-        self.output_suffix = output_suffix
-        self.template_suffix = template_suffix
+    def __init__(self, base_dir=os.getcwd(), autoescape_extensions=['html', 'xml']):
         self.base_dir = base_dir
-        self.template_dir = os.path.join(self.base_dir, 'templates')
-        self.content_dir = os.path.join(self.base_dir, 'content')
-        self.data_dir = os.path.join(self.base_dir, 'data')
-        self.build_dir = os.path.join(self.base_dir, 'build')
-        self.static_dir = os.path.join(self.base_dir, 'static')
-        self.env = Environment(
-            loader=FileSystemLoader(self.template_dir),
-            autoescape=select_autoescape(autoescape_extensions)
-        )
-
-        # TODO: Move these to a separate function and run during build instead of init
-        for path in [self.base_dir, self.template_dir, self.data_dir]:
-            if not os.path.isdir(path):
-                raise FileNotFoundError(path)
-
-        if not os.path.isdir(self.build_dir):
-            os.mkdir(self.build_dir)
-
+        self.sub_dirs = ['templates', 'data', 'static', 'pages', 'build']
+        self.dirs_no_check = ['build']
+        self.get_dirs()
         self.data = {}
+        self.env = Environment(loader=FileSystemLoader(self.templates_dir), autoescape=select_autoescape(autoescape_extensions))
 
     def __repr__(self):
         return str(self.__class__) + '\n' + '\n'.join((str(item) + ' = ' + str(self.__dict__[item]) for item in sorted(self.__dict__)))
 
-    def get_build_path(self, what):
-        return os.path.join(self.build_dir, '{}'.format(what))
+    def get_dirs(self):
+        for dir_name in self.sub_dirs:
+            setattr(self, '{}_dir'.format(dir_name), os.path.join(self.base_dir, dir_name))
 
-    # TODO: Make this more generic, should be able to generate xml for rss feeds using this function as well
-    # TODO: Minification should be optional and set via class property
-    # TODO: Create separate function for minification that handles different file types
-    def write_file(self, template, path):
-        rendered = self.env.get_template(template).render(self.data)
-        minified = htmlmin.minify(rendered, remove_comments=True)
-        with open(path, 'w') as f:
-            f.write(minified)
+    def validate_dirs(self):
+        for dir_name in self.sub_dirs:
+            if not os.path.isdir(getattr(self, '{}_dir'.format(dir_name))) and dir_name not in self.dirs_no_check:
+                raise FileNotFoundError(getattr(self, dir_name))
 
-    # TODO: Should this be merged with write_file?
-    # TODO: Rename to generate_file
-    # TODO: Allow user to pass in output_suffix for generating rss feeds and other file types
-    def generate_page(self, template_name, item):
-        self.data['current_item'] = item
-        dest = self.get_build_path('{}{}'.format(item, self.output_suffix))
-        template = '{}{}'.format(template_name, self.template_suffix)
-        self.write_file(template, dest)
-
-    # TODO: This feels like overkill. Nuke build directory and re-create?
-    def clean(self):
-        for root, dirs, files in os.walk(self.build_dir, topdown=False):
+    def generate_files(self, should_minify):
+        for root, dirs, files in os.walk(self.pages_dir):
             for item in files:
-                path = os.path.join(root, item)
-                os.remove(path)
-            for item in dirs:
-                path = os.path.join(root, item)
-                if not os.path.islink:
-                    os.rmdir(path)
+                full_path = os.path.join(root, item)
+                current = self.parse_markdown(full_path)
+                path = current['meta']['path']
+                template = current['meta']['template']
+                dest = os.path.join(self.build_dir, path)
+                page_data = {'meta': current['meta'], 'content': current['content']}
+                rendered = self.env.get_template(template).render({**self.data, **page_data})
+
+                if should_minify:
+                    file_type = pathlib.Path(path).suffix
+                    output = self.minify(rendered, file_type)
+                else:
+                    output = rendered
+
+                with open(dest, 'w') as f:
+                    f.write(output)
+
+    def minify(self, data, file_type):
+        if file_type == '.html':
+            return htmlmin.minify(data, remove_comments=True)
+        else:
+            return data
+
+    def parse_markdown(self, file):
+
+        markdown_extensions = [
+            'markdown.extensions.meta',
+            'markdown.extensions.smarty',
+            'markdown.extensions.toc',
+            'markdown.extensions.tables',
+            'markdown.extensions.codehilite',
+            'markdown.extensions.smarty'
+        ]
+
+        with open(file, 'r') as f:
+            raw_md = f.read()
+
+        m = markdown.Markdown(extensions=markdown_extensions, output_format='html5')
+        rendered = m.convert(raw_md)
+
+        meta = {}
+
+        for key in m.Meta:
+            if key in ['path', 'template', 'date'] and len(m.Meta[key]) > 1:
+                raise AttributeError('Multiple values found for {0}, but {0} must be a single value.'.format(key))
+
+            if len(m.Meta[key]) == 1:
+                meta[key] = m.Meta[key][0]
+            else:
+                meta[key] = ', '.join(m.Meta[key])
+
+        return {
+            'meta': meta,
+            'content': rendered
+        }
+
+    def clean(self):
+        shutil.rmtree(self.build_dir, ignore_errors=True)
 
     def copy_static(self):
-
-        # TODO: Make this more generic and use class variable to set name of folder rather than hard-coding node_modules
-        for current_dir in [os.path.join(self.base_dir, 'node_modules'), self.static_dir]:
-
-            for root, dirs, files in os.walk(current_dir):
-
-                for item in files:
-                    source = os.path.join(root, item)
-                    base = os.path.basename(root)
-
-                    if base == 'static':
-                        dest_dir = self.build_dir
-                    elif 'node_modules' in root:
-                        node_module = root.split('node_modules')[1].lstrip('/').split('/')[0]
-                        dest_dir = os.path.join(self.build_dir, node_module, os.path.basename(root))
-                    else:
-                        dest_dir = os.path.join(self.build_dir, os.path.basename(root))
-
-                    if not os.path.isdir(dest_dir):
-                        os.makedirs(dest_dir)
-
-                    dest = os.path.join(dest_dir, item)
-                    shutil.copyfile(source, dest)
+        shutil.copytree(self.static_dir, self.build_dir)
 
     def load_data(self):
         for root, dirs, files in os.walk(self.data_dir):
@@ -113,14 +119,33 @@ class InzaGenerator():
                 with open(full_path, 'rb') as f:
                     self.data[data_type][name] = yaml.load(f)
 
-    # TODO: Figure out how to handle generating pages and customization of what to generate
-    def run(self):
+        self.data['data']['date'] = datetime.datetime.today()
+
+    def compile_less(self):
+        less_dir = os.path.join(self.base_dir, 'less')
+
+        if not os.path.isdir(less_dir):
+            return
+
+        css_dir = os.path.realpath(os.path.join(self.static_dir, 'css'))
+
+        if not os.path.isdir(css_dir):
+            os.makedirs(css_dir)
+
+        for file_name in glob.glob('{}/{}'.format(less_dir, "*.less")):
+            less_path = os.path.realpath(file_name)
+            base_name = pathlib.Path(less_path).stem
+            css_path = os.path.realpath(os.path.join(css_dir, '{}.css'.format(base_name)))
+
+            subprocess.run('lessc {} {}'.format(less_path, css_path), check=True, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+
+    def run(self, minify=False):
         self.clean()
+        self.validate_dirs()
         self.copy_static()
         self.load_data()
-        self.generate_page('index', 'index')
-
-        for item in self.data['people']:
-            self.generate_page('person', item)
-
+        self.generate_files(minify)
+        self.compile_less()
         print('Site generation complete')
